@@ -49,7 +49,10 @@ body{background:var(--bg); color:var(--text);
 .main{flex:1; min-width:0; padding:16px}
 .top{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px}
 .mtitle{font-size:19px; font-weight:bold; margin-right:auto}
-#catSelect{display:none}
+#menuBtn{display:none; padding:8px 12px; border:1px solid var(--line); border-radius:9px;
+  background:var(--card); color:var(--text); font-size:15px; cursor:pointer; font-weight:bold}
+#backdrop{display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:40}
+#backdrop.show{display:block}
 input[type=search]{flex:1; min-width:160px; padding:9px 12px; border:1px solid var(--line);
   border-radius:9px; background:var(--card); color:var(--text); font-size:14px}
 select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
@@ -69,9 +72,13 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
 .empty{text-align:center; color:var(--muted); padding:60px 0}
 
 @media (max-width:760px){
-  .side{display:none}
-  #catSelect{display:block; flex:1; min-width:140px}
-  .mtitle{font-size:17px; width:100%; margin-bottom:4px}
+  /* 사이드바 → 왼쪽 서랍(드로어): ☰ 버튼으로 열고 닫음. 웹과 동일한 분야 목록 제공 */
+  .side{position:fixed; left:0; top:0; z-index:50; width:min(78vw,300px); height:100dvh;
+    transform:translateX(-105%); transition:transform .22s ease; box-shadow:4px 0 24px rgba(0,0,0,.25)}
+  .side.open{transform:translateX(0)}
+  #menuBtn{display:block}
+  .mtitle{font-size:17px}
+  .top input[type=search]{min-width:120px}
 }
 
 #setup{max-width:460px; margin:60px auto; background:var(--card); border:1px solid var(--line);
@@ -99,15 +106,16 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
   <div id="serr" class="err"></div>
 </div>
 
+<div id="backdrop" onclick="closeDrawer()"></div>
 <div class="shell" id="app" style="display:none">
-  <nav class="side">
+  <nav class="side" id="side">
     <h1>📰 뉴스 대시보드</h1>
     <div id="nav"></div>
   </nav>
   <main class="main">
     <div class="top">
+      <button id="menuBtn" onclick="openDrawer()">☰ 분야</button>
       <span class="mtitle" id="mtitle">전체</span>
-      <select id="catSelect"></select>
       <input type="search" id="q" placeholder="제목 검색 (Enter)">
       <select id="lang">
         <option value="">전체 언어</option><option value="ko">한국어</option>
@@ -181,14 +189,17 @@ function renderNav(){
   html+=group("영업 정보",[WATCH,...CUSTOM].filter(c=>!inPin.has(c)));
   html+=group("종합 뉴스",GENERAL.filter(c=>!inPin.has(c)));
   nav.innerHTML=html;
-  // 모바일 드롭다운
-  const sel=document.getElementById("catSelect");
-  const order=["",...pins,...[WATCH,...CUSTOM,...GENERAL].filter(c=>!inPin.has(c))];
-  sel.innerHTML=order.filter(c=>c===""||state.counts[c]).map(c=>
-    `<option value="${esc(c)}" ${state.cat===c?"selected":""}>${c||"전체"} ${state.counts[c]?`(${state.counts[c]})`:""}</option>`).join("");
   document.getElementById("mtitle").textContent=state.cat||"전체";
 }
-function pick(cat){ state.cat=cat; state.offset=0; renderNav(); load(false); }
+function openDrawer(){
+  document.getElementById("side").classList.add("open");
+  document.getElementById("backdrop").classList.add("show");
+}
+function closeDrawer(){
+  document.getElementById("side").classList.remove("open");
+  document.getElementById("backdrop").classList.remove("show");
+}
+function pick(cat){ state.cat=cat; state.offset=0; renderNav(); load(false); closeDrawer(); }
 
 async function loadCounts(){
   const days=document.getElementById("days").value;
@@ -250,7 +261,6 @@ function refresh(){ state.offset=0; loadCounts(); load(false); }
 document.getElementById("q").addEventListener("keydown",e=>{if(e.key==="Enter")refresh();});
 document.getElementById("lang").addEventListener("change",refresh);
 document.getElementById("days").addEventListener("change",refresh);
-document.getElementById("catSelect").addEventListener("change",e=>pick(e.target.value));
 
 if(cfg.url&&cfg.key){ document.getElementById("app").style.display="flex"; refresh(); }
 else document.getElementById("setup").style.display="block";
