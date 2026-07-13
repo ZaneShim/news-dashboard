@@ -67,6 +67,13 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
 .lang{border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:11px}
 .tag{background:var(--hover); border-radius:4px; padding:0 6px}
 .sum{color:var(--muted); font-size:13px; margin-top:6px}
+.also{color:var(--muted); font-size:12px}
+.also:not(:empty){margin-top:4px}
+.also a{color:var(--accent)}
+.vote{margin-left:auto; display:flex; gap:2px}
+.vbtn{border:none; background:none; cursor:pointer; font-size:13px; opacity:.4; padding:0 3px}
+.vbtn:hover{opacity:.9}
+.vbtn.von{opacity:1}
 .more{display:block; width:100%; padding:12px; margin:10px 0 30px; border:1px solid var(--line);
   border-radius:10px; background:var(--card); color:var(--accent); font-size:14px; cursor:pointer}
 .empty{text-align:center; color:var(--muted); padding:60px 0}
@@ -140,7 +147,7 @@ const GENERAL=["한국","정치","세계","비즈니스","과학/기술","엔터
 const ALL=[WATCH,...CUSTOM,...GENERAL];
 const PAGE=100;
 let cfg={url:localStorage.getItem("sb_url"), key:localStorage.getItem("sb_key")};
-let state={cat:"", offset:0, busy:false, counts:{}};
+let state={cat:"", offset:0, busy:false, counts:{}, seen:{}};
 const getPins=()=>JSON.parse(localStorage.getItem("cat_pins")||"[]").filter(c=>ALL.includes(c));
 const setPins=p=>localStorage.setItem("cat_pins",JSON.stringify(p));
 
@@ -226,25 +233,56 @@ function filters(){
     f+=`&or=(title.ilike.${s},title_ko.ilike.${s})`;}
   return f;
 }
+// 중복 병합: 같은 분류에서 정규화 제목이 같으면 대표 1건 + 다른 출처 병기
+function normT(s){ return (s||"").toLowerCase().replace(/[^0-9a-z가-힣ぁ-んァ-ヶ一-龥]/g,""); }
+
+function voteHTML(a){
+  const voted=JSON.parse(localStorage.getItem("votes")||"{}")[a.id];
+  return `<span class="vote" data-id="${a.id}">
+    <button class="vbtn ${voted===1?'von':''}" onclick="vote('${a.id}',1,this)" title="유용해요">👍</button>
+    <button class="vbtn ${voted===-1?'von':''}" onclick="vote('${a.id}',-1,this)" title="불필요해요">👎</button></span>`;
+}
+async function vote(id,v,btn){
+  const votes=JSON.parse(localStorage.getItem("votes")||"{}");
+  if(votes[id]) return;                       // 기기당 1회
+  votes[id]=v; localStorage.setItem("votes",JSON.stringify(votes));
+  btn.classList.add("von");
+  try{ await fetch(cfg.url+"/rest/v1/news_feedback",{method:"POST",
+    headers:{apikey:cfg.key,Authorization:"Bearer "+cfg.key,"Content-Type":"application/json"},
+    body:JSON.stringify({article_id:id,vote:v})}); }catch(e){}
+}
+
 function render(rows, append){
-  const list=document.getElementById("list"); if(!append) list.innerHTML="";
+  const list=document.getElementById("list"); if(!append){ list.innerHTML=""; state.seen={}; }
   for(const a of rows){
+    const key=(a.category||"")+"|"+normT(a.title_ko||a.title);
+    const prev=state.seen[key];
+    if(prev && key.length>10){                // 같은 사건 재게시 → 대표 카드에 출처만 추가
+      const also=prev.querySelector(".also");
+      const src=esc(a.source_name||dom(a.url));
+      also.insertAdjacentHTML("beforeend",
+        `${also.children.length?" · ":"같은 소식: "}<a href="${esc(a.url)}" target="_blank" rel="noopener">${src}</a>`);
+      continue;
+    }
     const t=a.title_ko||a.title;
     const orig=(a.title_ko&&a.lang!=="ko"&&a.title!==a.title_ko)?`<div class="orig">${esc(a.title)}</div>`:"";
     const L={ko:"한",en:"EN",ja:"日"}[a.lang]||a.lang;
     const tag=a.perspective_tag?`<span class="tag">${esc(a.perspective_tag)}</span>`:"";
     const sum=a.summary_ko?`<div class="sum">${esc(a.summary_ko)}</div>`:"";
-    list.insertAdjacentHTML("beforeend",`<div class="card">
+    const card=document.createElement("div"); card.className="card";
+    card.innerHTML=`
       <a class="t" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(t)}</a>${orig}
       <div class="meta"><span class="cat" onclick="pick('${(a.category||'').replace(/'/g,"\\'")}')">${esc(a.category||"미분류")}</span>${tag}
-        <span class="lang">${L}</span><span>${esc(a.source_name||dom(a.url))}</span><span>${fmtT(a.published_at)}</span></div>
-      ${sum}</div>`);
+        <span class="lang">${L}</span><span>${esc(a.source_name||dom(a.url))}</span><span>${fmtT(a.published_at)}</span>${voteHTML(a)}</div>
+      <div class="also"></div>${sum}`;
+    list.appendChild(card);
+    state.seen[key]=card;
   }
 }
 async function load(append){
   if(state.busy) return; state.busy=true;
   try{
-    const r=await api(`/rest/v1/news_articles?select=title,title_ko,url,source_name,lang,category,published_at,summary_ko,perspective_tag${filters()}&order=published_at.desc.nullslast&limit=${PAGE}&offset=${state.offset}`,{Prefer:"count=exact"});
+    const r=await api(`/rest/v1/news_articles?select=id,title,title_ko,url,source_name,lang,category,published_at,summary_ko,perspective_tag${filters()}&order=published_at.desc.nullslast&limit=${PAGE}&offset=${state.offset}`,{Prefer:"count=exact"});
     const rows=await r.json();
     const total=parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0;
     render(rows,append); state.offset+=rows.length;
