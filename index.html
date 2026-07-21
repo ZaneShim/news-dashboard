@@ -148,10 +148,11 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
     <div id="adminErr" class="err"></div>
     <div id="adminBody" style="display:none">
       <div class="row" style="margin-top:12px">
-        <input id="wlTerm" placeholder="회사명 (예: 피엔티, CATL)">
-        <select id="wlLang"><option value="ko">한국어</option><option value="en">영문</option><option value="ja">일본어</option></select>
+        <input id="wlTerm" placeholder="회사명 입력 (예: 피엔티, CATL, トヨタ)" onkeydown="if(event.key==='Enter')adminAdd()">
         <button class="adminbtn" onclick="adminAdd()">추가</button>
       </div>
+      <p style="margin:0 0 8px">언어는 자동 판별됩니다. 같은 회사를 여러 언어권에서 잡으려면
+        각 표기(예: 피엔티 / PNT)를 각각 추가하세요.</p>
       <div class="wl-list" id="wlList"></div>
       <p style="margin:0">아래 목록은 활성 워치리스트입니다. ✕ 로 삭제(비활성화)됩니다. 다음 수집부터 반영.</p>
     </div>
@@ -335,7 +336,7 @@ async function adminLoad(){
 }
 async function adminAdd(){
   const t=document.getElementById("wlTerm").value.trim(); if(!t) return;
-  const res=await adminRPC("add",t,document.getElementById("wlLang").value);
+  const res=await adminRPC("add",t);   // 언어는 서버가 회사명에서 자동 판별
   if(res.error){document.getElementById("adminErr").textContent=res.error; return;}
   document.getElementById("wlTerm").value=""; renderWL(res.items||[]);
 }
