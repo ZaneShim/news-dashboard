@@ -70,6 +70,22 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
 .cat{color:var(--accent); font-weight:bold; cursor:pointer}
 .lang{border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:11px}
 .tag{background:var(--hover); border-radius:4px; padding:0 6px}
+/* 영업 신호 강조 — 일반 목록에서도 눈에 띄게 (메일 박스 색과 동일) */
+.tag.lead{background:#e3f3e6; color:#1d7a2e; font-weight:bold}
+.tag.imm{background:#fbe6e6; color:#a02020; font-weight:bold}
+@media (prefers-color-scheme: dark){
+  .tag.lead{background:#1d3b25; color:#7fd694} .tag.imm{background:#3d1f1f; color:#f0a0a0}
+}
+:root[data-theme=dark] .tag.lead{background:#1d3b25; color:#7fd694}
+:root[data-theme=dark] .tag.imm{background:#3d1f1f; color:#f0a0a0}
+/* 워치리스트 매칭 회사칩 — 영업에선 '어느 회사 건인가'가 제목만큼 중요 */
+.co{background:var(--on); color:var(--on-text); border-radius:4px; padding:0 6px; font-weight:bold; font-size:11px}
+.co.new{background:none; color:var(--accent); border:1px dashed var(--line)}
+/* 사이드바 신호 항목 */
+.navitem.sig .nm{font-weight:bold}
+.sigclear{display:inline-block; margin-left:6px; padding:1px 7px; border:1px solid var(--line);
+  border-radius:20px; background:var(--card); color:var(--muted); font-size:11px; cursor:pointer}
+.sigclear:hover{color:var(--text)}
 .sum{color:var(--muted); font-size:13px; margin-top:6px}
 .also{color:var(--muted); font-size:12px}
 .also:not(:empty){margin-top:4px}
@@ -194,6 +210,15 @@ const WATCH="워치리스트";
 const CUSTOM=["배터리/이차전지","반도체","스마트팩토리/자동화","피지컬AI/로보틱스","AI","IT","부동산","주식"];
 const GENERAL=["한국","정치","세계","비즈니스","과학/기술","엔터테인먼트","스포츠","건강"];
 const ALL=[WATCH,...CUSTOM,...GENERAL];
+// 영업 신호 뷰 — 분류(category)와 직교하는 '관점' 축이라 별도 필터로 둔다.
+// 메일 최상단 3박스와 이름·순서를 일치시켜 "메일에서 본 것 = 여기서 보는 것"이 되게 함.
+const SIGNALS=[
+  {id:"lead", label:"🟢 선행 · 관심회사", tag:"투자계획", watch:true},
+  {id:"new",  label:"🆕 신규 발굴",       tag:"투자계획", watch:false},
+  {id:"imm",  label:"⚡ 임박·확정",       tags:["수주/증설","실적/재무"]},
+];
+const LEAD_TAG="투자계획";
+const IMM_TAGS=["수주/증설","실적/재무"];
 const PAGE=100;
 // 내장 접속 정보 — anon(Publishable) 키는 공개용으로 설계된 키라 내장해도 안전
 // (데이터 보호는 DB 읽기 정책이 담당: 기사 열람·피드백 등록만 가능)
@@ -205,7 +230,7 @@ let cfg={
   url: localStorage.getItem("sb_url") || PRESET.url,
   key: localStorage.getItem("sb_key") || (PRESET.key.startsWith("PASTE") ? "" : PRESET.key)
 };
-let state={cat:"", offset:0, busy:false, counts:{}, seen:{}};
+let state={cat:"", persp:"", offset:0, busy:false, counts:{}, seen:{}};
 const getPins=()=>JSON.parse(localStorage.getItem("cat_pins")||"[]").filter(c=>ALL.includes(c));
 const setPins=p=>localStorage.setItem("cat_pins",JSON.stringify(p));
 
@@ -232,6 +257,32 @@ function togglePin(cat,ev){
   setPins(p); renderNav();
 }
 
+// 신호 뷰 → PostgREST 필터. 값에 '/'가 있어 in.() 은 값마다 따옴표+인코딩
+function sigFilter(id){
+  const s=SIGNALS.find(x=>x.id===id); if(!s) return "";
+  let f = s.tags
+    ? "&perspective_tag=in.("+s.tags.map(t=>encodeURIComponent('"'+t+'"')).join(",")+")"
+    : "&perspective_tag=eq."+encodeURIComponent(s.tag);
+  if(s.watch===true)  f+="&matched_companies=not.is.null";  // 워치리스트 매칭된 것만
+  if(s.watch===false) f+="&matched_companies=is.null";      // 워치리스트 밖 = 신규 후보
+  return f;
+}
+function sigRow(s){
+  const n=state.counts["__sig_"+s.id]??"";
+  return `<button class="navitem sig ${state.persp===s.id?'on':''}" onclick="pickSig('${s.id}')">
+    <span class="nm">${s.label}</span><span class="ct">${n===""?"":n.toLocaleString()}</span></button>`;
+}
+function pickSig(id){
+  state.persp = state.persp===id ? "" : id;   // 같은 항목 재클릭 = 해제
+  state.offset=0; renderNav(); load(false); closeDrawer();
+}
+function setTitle(){
+  const s=SIGNALS.find(x=>x.id===state.persp);
+  const parts=[]; if(s) parts.push(esc(s.label)); if(state.cat) parts.push(esc(state.cat));
+  document.getElementById("mtitle").innerHTML =
+    (parts.length?parts.join(" · "):"전체")
+    + (s?`<span class="sigclear" onclick="pickSig('${s.id}')">✕ 신호 해제</span>`:"");
+}
 function navRow(cat){
   const label=cat||"전체"; const n=state.counts[cat]??"";
   const pinned=getPins().includes(cat);
@@ -250,11 +301,13 @@ function renderNav(){
   const pins=getPins().filter(c=>state.counts[c]);
   const inPin=new Set(pins);
   let html=navRow("");                              // 전체
+  // 영업 신호를 최상단에 — 건수 뱃지 자체가 알림 역할. 분류와 조합해서 쓸 수 있음
+  html+=`<div class="grp">⚡ 영업 신호</div>`+SIGNALS.map(sigRow).join("");
   if(pins.length) html+=`<div class="grp">⭐ 즐겨찾기</div>`+pins.map(navRow).join("");
   html+=group("영업 정보",[WATCH,...CUSTOM].filter(c=>!inPin.has(c)));
   html+=group("종합 뉴스",GENERAL.filter(c=>!inPin.has(c)));
   nav.innerHTML=html;
-  document.getElementById("mtitle").textContent=state.cat||"전체";
+  setTitle();
 }
 function openDrawer(){
   document.getElementById("side").classList.add("open");
@@ -276,7 +329,15 @@ async function loadCounts(){
       return [c, parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0];
     }catch(e){ return [c,0]; }
   }));
+  // 신호 건수 (분류 선택과 무관한 전체 기준 — 뱃지 숫자가 흔들리지 않게)
+  const sres=await Promise.all(SIGNALS.map(async s=>{
+    try{ const r=await api(`/rest/v1/news_articles?select=id&status=in.(processed,published)${dF}${sigFilter(s.id)}&limit=1`,
+        {Prefer:"count=exact",Range:"0-0"});
+      return ["__sig_"+s.id, parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0];
+    }catch(e){ return ["__sig_"+s.id,0]; }
+  }));
   state.counts={}; res.forEach(([c,n])=>state.counts[c]=n);
+  sres.forEach(([k,n])=>state.counts[k]=n);
   renderNav();
 }
 
@@ -286,6 +347,7 @@ function filters(){
   if(days) f+="&collected_at=gte."+new Date(Date.now()-days*864e5).toISOString();
   const lang=document.getElementById("lang").value; if(lang) f+="&lang=eq."+lang;
   if(state.cat) f+="&category=eq."+encodeURIComponent(state.cat);
+  if(state.persp) f+=sigFilter(state.persp);   // 신호 뷰는 분류와 조합 가능
   const q=document.getElementById("q").value.trim();
   if(q){const s=encodeURIComponent("*"+q.replace(/[%*,()]/g," ").trim()+"*");
     f+=`&or=(title.ilike.${s},title_ko.ilike.${s})`;}
@@ -364,12 +426,19 @@ function render(rows, append){
     const t=a.title_ko||a.title;
     const orig=(a.title_ko&&a.lang!=="ko"&&a.title!==a.title_ko)?`<div class="orig">${esc(a.title)}</div>`:"";
     const L={ko:"한",en:"EN",ja:"日"}[a.lang]||a.lang;
-    const tag=a.perspective_tag?`<span class="tag">${esc(a.perspective_tag)}</span>`:"";
+    // 관점 태그 — 영업 신호는 색으로 승격(선행=녹색·임박=빨강), 나머지는 회색
+    const pt=a.perspective_tag||"";
+    const cls=pt===LEAD_TAG?"tag lead":(IMM_TAGS.includes(pt)?"tag imm":"tag");
+    const tag=pt?`<span class="${cls}">${esc(pt)}</span>`:"";
+    // 회사칩 — 어느 회사 건인지가 제목만큼 중요. 워치리스트 밖 선행신호는 신규 후보 표시
+    const mc=a.matched_companies||[];
+    const co=mc.length ? `<span class="co">${esc(mc.join(", "))}</span>`
+                       : (pt===LEAD_TAG?`<span class="co new">🆕 신규</span>`:"");
     const sum=a.summary_ko?`<div class="sum">${esc(a.summary_ko)}</div>`:"";
     const card=document.createElement("div"); card.className="card";
     card.innerHTML=`
       <a class="t" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(t)}</a>${orig}
-      <div class="meta"><span class="cat" onclick="pick('${(a.category||'').replace(/'/g,"\\'")}')">${esc(a.category||"미분류")}</span>${tag}
+      <div class="meta"><span class="cat" onclick="pick('${(a.category||'').replace(/'/g,"\\'")}')">${esc(a.category||"미분류")}</span>${co}${tag}
         <span class="lang">${L}</span><span>${esc(a.source_name||dom(a.url))}</span><span>${fmtT(a.published_at)}</span>${voteHTML(a)}</div>
       <div class="also"></div>${sum}`;
     list.appendChild(card);
@@ -379,14 +448,16 @@ function render(rows, append){
 async function load(append){
   if(state.busy) return; state.busy=true;
   try{
-    const r=await api(`/rest/v1/news_articles?select=id,title,title_ko,url,source_name,lang,category,published_at,summary_ko,perspective_tag${filters()}&order=published_at.desc.nullslast&limit=${PAGE}&offset=${state.offset}`,{Prefer:"count=exact"});
+    const r=await api(`/rest/v1/news_articles?select=id,title,title_ko,url,source_name,lang,category,published_at,summary_ko,perspective_tag,matched_companies${filters()}&order=published_at.desc.nullslast&limit=${PAGE}&offset=${state.offset}`,{Prefer:"count=exact"});
     const rows=await r.json();
     const total=parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0;
     render(rows,append); state.offset+=rows.length;
-    document.getElementById("stat").textContent=`${(state.cat||"전체")} · ${total.toLocaleString()}건 중 ${Math.min(state.offset,total).toLocaleString()}건`;
+    const sig=SIGNALS.find(s=>s.id===state.persp);
+    const scope=[sig&&sig.label, state.cat].filter(Boolean).join(" · ")||"전체";
+    document.getElementById("stat").textContent=`${scope} · ${total.toLocaleString()}건 중 ${Math.min(state.offset,total).toLocaleString()}건`;
     document.getElementById("more").style.display=state.offset<total?"block":"none";
     document.getElementById("empty").style.display=total?"none":"block";
-    document.getElementById("mtitle").textContent=state.cat||"전체";
+    setTitle();
   }catch(e){ if(e.message==="auth"){localStorage.clear(); location.reload();} }
   state.busy=false;
 }
