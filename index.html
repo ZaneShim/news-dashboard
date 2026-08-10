@@ -90,10 +90,6 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
 .also{color:var(--muted); font-size:12px}
 .also:not(:empty){margin-top:4px}
 .also a{color:var(--accent)}
-.vote{margin-left:auto; display:flex; gap:2px}
-.vbtn{border:none; background:none; cursor:pointer; font-size:13px; opacity:.4; padding:0 3px}
-.vbtn:hover{opacity:.9}
-.vbtn.von{opacity:1}
 .more{display:block; width:100%; padding:12px; margin:10px 0 30px; border:1px solid var(--line);
   border-radius:10px; background:var(--card); color:var(--accent); font-size:14px; cursor:pointer}
 .empty{text-align:center; color:var(--muted); padding:60px 0}
@@ -356,21 +352,9 @@ function filters(){
 // 중복 병합: 같은 분류에서 정규화 제목이 같으면 대표 1건 + 다른 출처 병기
 function normT(s){ return (s||"").toLowerCase().replace(/[^0-9a-z가-힣ぁ-んァ-ヶ一-龥]/g,""); }
 
-function voteHTML(a){
-  const voted=JSON.parse(localStorage.getItem("votes")||"{}")[a.id];
-  return `<span class="vote" data-id="${a.id}">
-    <button class="vbtn ${voted===1?'von':''}" onclick="vote('${a.id}',1,this)" title="유용해요">👍</button>
-    <button class="vbtn ${voted===-1?'von':''}" onclick="vote('${a.id}',-1,this)" title="불필요해요">👎</button></span>`;
-}
-async function vote(id,v,btn){
-  const votes=JSON.parse(localStorage.getItem("votes")||"{}");
-  if(votes[id]) return;                       // 기기당 1회
-  votes[id]=v; localStorage.setItem("votes",JSON.stringify(votes));
-  btn.classList.add("von");
-  try{ await fetch(cfg.url+"/rest/v1/news_feedback",{method:"POST",
-    headers:{apikey:cfg.key,Authorization:"Bearer "+cfg.key,"Content-Type":"application/json"},
-    body:JSON.stringify({article_id:id,vote:v})}); }catch(e){}
-}
+// 기사 👍/👎 평가는 제거됨(2026-07-28). 도입 목적이 '무LLM 환경의 품질 판단 근거 수집'이었는데
+// 그 역할을 영업 신호 태그가 대신함. news_feedback 테이블·정책(mig 012)은 그대로 두되
+// 파이썬 파이프라인은 원래 이 데이터를 읽지 않으므로 기능적으로 완전히 제거된 상태.
 
 // ── 워치리스트 관리 (비밀번호는 서버 함수가 검증) ──
 let adminPw="";
@@ -439,7 +423,7 @@ function render(rows, append){
     card.innerHTML=`
       <a class="t" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(t)}</a>${orig}
       <div class="meta"><span class="cat" onclick="pick('${(a.category||'').replace(/'/g,"\\'")}')">${esc(a.category||"미분류")}</span>${co}${tag}
-        <span class="lang">${L}</span><span>${esc(a.source_name||dom(a.url))}</span><span>${fmtT(a.published_at)}</span>${voteHTML(a)}</div>
+        <span class="lang">${L}</span><span>${esc(a.source_name||dom(a.url))}</span><span>${fmtT(a.published_at)}</span></div>
       <div class="also"></div>${sum}`;
     list.appendChild(card);
     state.seen[key]=card;
