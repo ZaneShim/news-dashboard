@@ -73,11 +73,14 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
 /* 영업 신호 강조 — 일반 목록에서도 눈에 띄게 (메일 박스 색과 동일) */
 .tag.lead{background:#e3f3e6; color:#1d7a2e; font-weight:bold}
 .tag.imm{background:#fbe6e6; color:#a02020; font-weight:bold}
+.tag.pol{background:#f2efe4; color:#7a6427; font-weight:bold}
 @media (prefers-color-scheme: dark){
   .tag.lead{background:#1d3b25; color:#7fd694} .tag.imm{background:#3d1f1f; color:#f0a0a0}
+  .tag.pol{background:#3a3524; color:#d9c98a}
 }
 :root[data-theme=dark] .tag.lead{background:#1d3b25; color:#7fd694}
 :root[data-theme=dark] .tag.imm{background:#3d1f1f; color:#f0a0a0}
+:root[data-theme=dark] .tag.pol{background:#3a3524; color:#d9c98a}
 /* 워치리스트 매칭 회사칩 — 영업에선 '어느 회사 건인가'가 제목만큼 중요 */
 .co{background:var(--on); color:var(--on-text); border-radius:4px; padding:0 6px; font-weight:bold; font-size:11px}
 .co.new{background:none; color:var(--accent); border:1px dashed var(--line)}
@@ -212,9 +215,11 @@ const SIGNALS=[
   {id:"lead", label:"🟢 선행 · 관심회사", tag:"투자계획", watch:true},
   {id:"new",  label:"🆕 신규 발굴",       tag:"투자계획", watch:false},
   {id:"imm",  label:"⚡ 임박·확정",       tags:["수주/증설","실적/재무"]},
+  {id:"pol",  label:"🏛 정책·인프라",      tag:"정책/인프라"},
 ];
 const LEAD_TAG="투자계획";
 const IMM_TAGS=["수주/증설","실적/재무"];
+const POLICY_TAG="정책/인프라";
 const PAGE=100;
 // 내장 접속 정보 — anon(Publishable) 키는 공개용으로 설계된 키라 내장해도 안전
 // (데이터 보호는 DB 읽기 정책이 담당: 기사 열람·피드백 등록만 가능)
@@ -412,7 +417,7 @@ function render(rows, append){
     const L={ko:"한",en:"EN",ja:"日"}[a.lang]||a.lang;
     // 관점 태그 — 영업 신호는 색으로 승격(선행=녹색·임박=빨강), 나머지는 회색
     const pt=a.perspective_tag||"";
-    const cls=pt===LEAD_TAG?"tag lead":(IMM_TAGS.includes(pt)?"tag imm":"tag");
+    const cls=pt===LEAD_TAG?"tag lead":(IMM_TAGS.includes(pt)?"tag imm":(pt===POLICY_TAG?"tag pol":"tag"));
     const tag=pt?`<span class="${cls}">${esc(pt)}</span>`:"";
     // 회사칩 — 어느 회사 건인지가 제목만큼 중요. 워치리스트 밖 선행신호는 신규 후보 표시
     const mc=a.matched_companies||[];
