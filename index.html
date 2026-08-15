@@ -293,19 +293,21 @@ function navRow(cat){
     <span class="nm">${esc(label)}</span>
     <span class="ct">${n===""?"":n.toLocaleString()}</span>${pinBtn}</button>`;
 }
-function group(title, cats){
-  const vis=cats.filter(c=>state.counts[c]); if(!vis.length) return "";
+// always=true 면 0건이어도 항상 표시(영업 정보는 핵심 분야라 사라지면 안 됨).
+// 그 외에도 '미확인(null)'은 숨기지 않는다 — 조회 실패를 0건으로 오인하면 분야가 증발한다.
+function group(title, cats, always){
+  const vis=cats.filter(c=>always || state.counts[c]!==0); if(!vis.length) return "";
   return `<div class="grp">${title}</div>`+vis.map(navRow).join("");
 }
 function renderNav(){
   const nav=document.getElementById("nav");
-  const pins=getPins().filter(c=>state.counts[c]);
+  const pins=getPins().filter(c=>state.counts[c]!==0);
   const inPin=new Set(pins);
   let html=navRow("");                              // 전체
   // 영업 신호를 최상단에 — 건수 뱃지 자체가 알림 역할. 분류와 조합해서 쓸 수 있음
   html+=`<div class="grp">⚡ 영업 신호</div>`+SIGNALS.map(sigRow).join("");
   if(pins.length) html+=`<div class="grp">⭐ 즐겨찾기</div>`+pins.map(navRow).join("");
-  html+=group("영업 정보",[WATCH,...CUSTOM].filter(c=>!inPin.has(c)));
+  html+=group("영업 정보",[WATCH,...CUSTOM].filter(c=>!inPin.has(c)), true);  // 항상 표시
   html+=group("종합 뉴스",GENERAL.filter(c=>!inPin.has(c)));
   nav.innerHTML=html;
   setTitle();
@@ -320,25 +322,42 @@ function closeDrawer(){
 }
 function pick(cat){ state.cat=cat; state.offset=0; renderNav(); load(false); closeDrawer(); }
 
+// 건수 1건 조회. 실패하면 null 을 돌려준다 — '진짜 0' 과 반드시 구분해야 함.
+// (예전엔 실패도 0 으로 처리해서, 기사가 멀쩡히 있는 분야가 사이드바에서 통째로 사라졌다)
+async function countOne(extra){
+  for(let i=0;i<2;i++){
+    try{
+      const r=await api(`/rest/v1/news_articles?select=id&status=in.(processed,published)${extra}&limit=1`,
+        {Prefer:"count=exact",Range:"0-0"});
+      return parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0;
+    }catch(e){
+      if(e.message==="auth") throw e;
+      if(i===0) await new Promise(r=>setTimeout(r,700));   // 1회 재시도
+    }
+  }
+  return null;   // 미확인
+}
+// 동시 요청 수 제한 — 20여 개를 한꺼번에 쏘면 count=exact 가 서버에서 밀려 일부가 실패한다
+async function mapLimit(items, n, fn){
+  const out=new Array(items.length); let i=0;
+  await Promise.all(Array.from({length:Math.min(n,items.length)},async()=>{
+    while(i<items.length){ const k=i++; out[k]=await fn(items[k]); }
+  }));
+  return out;
+}
+
 async function loadCounts(){
   const days=document.getElementById("days").value;
   const dF=days?"&collected_at=gte."+new Date(Date.now()-days*864e5).toISOString():"";
-  const res=await Promise.all(["",...ALL].map(async c=>{
-    const cF=c?"&category=eq."+encodeURIComponent(c):"";
-    try{ const r=await api(`/rest/v1/news_articles?select=id&status=in.(processed,published)${dF}${cF}&limit=1`,
-        {Prefer:"count=exact",Range:"0-0"});
-      return [c, parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0];
-    }catch(e){ return [c,0]; }
-  }));
-  // 신호 건수 (분류 선택과 무관한 전체 기준 — 뱃지 숫자가 흔들리지 않게)
-  const sres=await Promise.all(SIGNALS.map(async s=>{
-    try{ const r=await api(`/rest/v1/news_articles?select=id&status=in.(processed,published)${dF}${sigFilter(s.id)}&limit=1`,
-        {Prefer:"count=exact",Range:"0-0"});
-      return ["__sig_"+s.id, parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0];
-    }catch(e){ return ["__sig_"+s.id,0]; }
-  }));
-  state.counts={}; res.forEach(([c,n])=>state.counts[c]=n);
-  sres.forEach(([k,n])=>state.counts[k]=n);
+  const jobs=[
+    ...["",...ALL].map(c=>({key:c, q:dF+(c?"&category=eq."+encodeURIComponent(c):"")})),
+    // 신호 건수 (분류 선택과 무관한 전체 기준 — 뱃지 숫자가 흔들리지 않게)
+    ...SIGNALS.map(s=>({key:"__sig_"+s.id, q:dF+sigFilter(s.id)})),
+  ];
+  try{
+    const res=await mapLimit(jobs, 4, j=>countOne(j.q));
+    state.counts={}; jobs.forEach((j,i)=>state.counts[j.key]=res[i]);
+  }catch(e){ if(e.message==="auth"){localStorage.clear(); location.reload(); return;} }
   renderNav();
 }
 
