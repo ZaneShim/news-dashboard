@@ -62,6 +62,13 @@ input[type=search]{flex:1; min-width:160px; padding:9px 12px; border:1px solid v
 select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
   background:var(--card); color:var(--text); font-size:14px}
 .stat{color:var(--muted); font-size:12px; margin-bottom:10px}
+.query-notice{display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;
+  color:var(--muted); font-size:13px; overflow-wrap:anywhere}
+.query-notice[hidden]{display:none}
+.query-notice button{border:1px solid var(--line); border-radius:6px; background:var(--card);
+  color:var(--accent); padding:6px 10px; cursor:pointer; flex:none}
+.query-notice.error{color:#b42318}
+.mtitle{overflow-wrap:anywhere; max-width:100%}
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px}
 .card a.t{color:var(--text); text-decoration:none; font-weight:bold; font-size:15px}
 .card a.t:hover{color:var(--accent)}
@@ -197,8 +204,14 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
         <option value="7">7일</option><option value="30">30일</option><option value="">전체</option>
       </select>
     </div>
-    <div class="stat" id="stat"></div>
-    <div id="list"></div>
+    <div class="stat" id="stat" role="status" aria-live="polite"></div>
+    <div class="query-notice" id="countNotice" role="status" hidden>
+      <span id="countMessage"></span><button type="button" onclick="loadCounts()">건수 다시 조회</button>
+    </div>
+    <div class="query-notice error" id="loadError" role="alert" hidden>
+      <span id="loadMessage"></span><button type="button" onclick="retryLoad()">다시 조회</button>
+    </div>
+    <div id="list" aria-busy="false"></div>
     <button class="more" id="more" style="display:none" onclick="loadMore()">더 보기</button>
     <div class="empty" id="empty" style="display:none">조건에 맞는 기사가 없습니다</div>
   </main>
@@ -232,6 +245,8 @@ let cfg={
   key: localStorage.getItem("sb_key") || (PRESET.key.startsWith("PASTE") ? "" : PRESET.key)
 };
 let state={cat:"", persp:"", offset:0, busy:false, counts:{}, seen:{}};
+let articleRequest=0, countRequest=0, articleController=null, countController=null;
+let failedAppend=false;
 const getPins=()=>JSON.parse(localStorage.getItem("cat_pins")||"[]").filter(c=>ALL.includes(c));
 const setPins=p=>localStorage.setItem("cat_pins",JSON.stringify(p));
 
@@ -241,10 +256,39 @@ function saveSetup(){
   if(!u.startsWith("https://")||k.length<30){document.getElementById("serr").textContent="URL 또는 키 형식이 올바르지 않습니다"; return;}
   localStorage.setItem("sb_url",u); localStorage.setItem("sb_key",k); location.reload();
 }
-async function api(path, headers={}){
-  const r=await fetch(cfg.url+path,{headers:{apikey:cfg.key,Authorization:"Bearer "+cfg.key,...headers}});
-  if(r.status===401||r.status===403) throw new Error("auth");
-  return r;
+async function api(path, headers={}, signal){
+  const controller=new AbortController();
+  const cancel=()=>controller.abort();
+  if(signal?.aborted) cancel();
+  signal?.addEventListener("abort",cancel,{once:true});
+  const timer=setTimeout(cancel,20000);
+  try{
+    const r=await fetch(cfg.url+path,{signal:controller.signal,
+      headers:{apikey:cfg.key,Authorization:"Bearer "+cfg.key,...headers}});
+    if(r.status===401||r.status===403) throw new Error("auth");
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    // Read the body before releasing the timeout or cancellation handler.
+    const body=await r.text();
+    return {headers:r.headers,json:async()=>JSON.parse(body)};
+  }catch(e){
+    if(controller.signal.aborted&&!signal?.aborted) throw new Error("timeout");
+    throw e;
+  }finally{
+    clearTimeout(timer); signal?.removeEventListener("abort",cancel);
+  }
+}
+function exactCount(r){
+  const value=r.headers.get("content-range")||"";
+  const match=value.match(/\/(\d+)$/);
+  if(!match) throw new Error("invalid count");
+  const count=Number(match[1]);
+  if(!Number.isSafeInteger(count)) throw new Error("invalid count");
+  return count;
+}
+function queryError(e){
+  return e.message==="auth" ? "연결 권한을 확인할 수 없습니다."
+    : e.message==="timeout" ? "서버 응답 시간이 초과되었습니다."
+    : "기사를 불러오지 못했습니다.";
 }
 function esc(s){const d=document.createElement("div");d.textContent=s||"";return d.innerHTML;}
 function dom(u){try{return new URL(u).hostname.replace(/^www\./,"")}catch(e){return ""}}
@@ -324,13 +368,14 @@ function pick(cat){ state.cat=cat; state.offset=0; renderNav(); load(false); clo
 
 // 건수 1건 조회. 실패하면 null 을 돌려준다 — '진짜 0' 과 반드시 구분해야 함.
 // (예전엔 실패도 0 으로 처리해서, 기사가 멀쩡히 있는 분야가 사이드바에서 통째로 사라졌다)
-async function countOne(extra){
+async function countOne(extra, signal){
   for(let i=0;i<2;i++){
     try{
       const r=await api(`/rest/v1/news_articles?select=id&status=in.(processed,published)${extra}&limit=1`,
-        {Prefer:"count=exact",Range:"0-0"});
-      return parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0;
+        {Prefer:"count=exact",Range:"0-0"},signal);
+      return exactCount(r);
     }catch(e){
+      if(signal?.aborted) throw e;
       if(e.message==="auth") throw e;
       if(i===0) await new Promise(r=>setTimeout(r,700));   // 1회 재시도
     }
@@ -347,6 +392,11 @@ async function mapLimit(items, n, fn){
 }
 
 async function loadCounts(){
+  countController?.abort();
+  const controller=new AbortController(); countController=controller;
+  const request=++countRequest;
+  state.counts={}; renderNav();
+  const notice=document.getElementById("countNotice"); notice.hidden=true;
   const days=document.getElementById("days").value;
   const dF=days?"&collected_at=gte."+new Date(Date.now()-days*864e5).toISOString():"";
   const jobs=[
@@ -355,9 +405,19 @@ async function loadCounts(){
     ...SIGNALS.map(s=>({key:"__sig_"+s.id, q:dF+sigFilter(s.id)})),
   ];
   try{
-    const res=await mapLimit(jobs, 4, j=>countOne(j.q));
+    const res=await mapLimit(jobs, 4, j=>countOne(j.q,controller.signal));
+    if(request!==countRequest) return;
     state.counts={}; jobs.forEach((j,i)=>state.counts[j.key]=res[i]);
-  }catch(e){ if(e.message==="auth"){localStorage.clear(); location.reload(); return;} }
+    if(res.some(n=>n===null)){
+      document.getElementById("countMessage").textContent="일부 건수를 확인하지 못했습니다.";
+      notice.hidden=false;
+    }
+  }catch(e){
+    if(request!==countRequest||controller.signal.aborted) return;
+    document.getElementById("countMessage").textContent=queryError(e);
+    notice.hidden=false;
+  }
+  if(request!==countRequest) return;
   renderNav();
 }
 
@@ -454,21 +514,51 @@ function render(rows, append){
   }
 }
 async function load(append){
-  if(state.busy) return; state.busy=true;
+  if(append&&state.busy) return;
+  articleController?.abort();
+  const controller=new AbortController(); articleController=controller;
+  const request=++articleRequest;
+  state.busy=true;
+  if(!append){state.offset=0; render([],false);}
+  const offset=state.offset;
+  const sig=SIGNALS.find(s=>s.id===state.persp);
+  const scope=[sig&&sig.label, state.cat].filter(Boolean).join(" · ")||"전체";
+  setTitle();
+  document.getElementById("loadError").hidden=true;
+  document.getElementById("empty").style.display="none";
+  document.getElementById("list").setAttribute("aria-busy","true");
+  document.getElementById("more").disabled=true;
+  if(!append){
+    document.getElementById("stat").textContent="불러오는 중...";
+    document.getElementById("more").style.display="none";
+  }
   try{
-    const r=await api(`/rest/v1/news_articles?select=id,title,title_ko,url,source_name,lang,category,published_at,summary_ko,perspective_tag,matched_companies${filters()}&order=published_at.desc.nullslast&limit=${PAGE}&offset=${state.offset}`,{Prefer:"count=exact"});
+    const r=await api(`/rest/v1/news_articles?select=id,title,title_ko,url,source_name,lang,category,published_at,summary_ko,perspective_tag,matched_companies${filters()}&order=published_at.desc.nullslast,id.asc&limit=${PAGE}&offset=${offset}`,{Prefer:"count=exact"},controller.signal);
     const rows=await r.json();
-    const total=parseInt((r.headers.get("content-range")||"/0").split("/")[1])||0;
-    render(rows,append); state.offset+=rows.length;
-    const sig=SIGNALS.find(s=>s.id===state.persp);
-    const scope=[sig&&sig.label, state.cat].filter(Boolean).join(" · ")||"전체";
+    if(request!==articleRequest) return;
+    if(!Array.isArray(rows)) throw new Error("invalid rows");
+    const total=exactCount(r);
+    render(rows,append); state.offset=offset+rows.length;
     document.getElementById("stat").textContent=`${scope} · ${total.toLocaleString()}건 중 ${Math.min(state.offset,total).toLocaleString()}건`;
     document.getElementById("more").style.display=state.offset<total?"block":"none";
     document.getElementById("empty").style.display=total?"none":"block";
     setTitle();
-  }catch(e){ if(e.message==="auth"){localStorage.clear(); location.reload();} }
-  state.busy=false;
+  }catch(e){
+    if(request!==articleRequest||controller.signal.aborted) return;
+    failedAppend=append;
+    document.getElementById("loadMessage").textContent=queryError(e);
+    document.getElementById("loadError").hidden=false;
+    document.getElementById("more").style.display="none";
+    if(!append) document.getElementById("stat").textContent=scope+" · 조회 실패";
+  }finally{
+    if(request===articleRequest){
+      state.busy=false;
+      document.getElementById("more").disabled=false;
+      document.getElementById("list").setAttribute("aria-busy","false");
+    }
+  }
 }
+function retryLoad(){load(failedAppend);}
 function loadMore(){ load(true); }
 function refresh(){ state.offset=0; loadCounts(); load(false); }
 
