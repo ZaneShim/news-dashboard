@@ -91,6 +91,21 @@ select{padding:9px 10px; border:1px solid var(--line); border-radius:9px;
 /* 워치리스트 매칭 회사칩 — 영업에선 '어느 회사 건인가'가 제목만큼 중요 */
 .co{background:var(--on); color:var(--on-text); border-radius:4px; padding:0 6px; font-weight:bold; font-size:11px}
 .co.new{background:none; color:var(--accent); border:1px dashed var(--line)}
+/* 묶음형 목록 — 회사·사건 단위로 묶고 같은 소식은 접는다 */
+.bundle{background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding:11px 14px 6px; margin-bottom:8px}
+.ghd{display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:6px}
+.gname{font-weight:bold; font-size:14px}
+.gcount{color:var(--muted); font-size:12px; margin-left:auto; white-space:nowrap}
+.item{display:flex; gap:10px; align-items:baseline;
+  padding:7px 0 7px 12px; border-left:2px solid var(--line)}
+.item + .item{margin-top:2px}
+.ititle{flex:1; min-width:0}
+.ititle > a{color:var(--text); text-decoration:none; font-size:15px; line-height:1.45; font-weight:500}
+.ititle > a:hover{color:var(--accent)}
+.imeta{color:var(--muted); font-size:12px; margin-top:3px;
+  display:flex; gap:7px; flex-wrap:wrap; align-items:center}
+.itime{color:var(--muted); font-size:11.5px; white-space:nowrap; font-variant-numeric:tabular-nums}
 /* 사이드바 신호 항목 */
 .navitem.sig .nm{font-weight:bold}
 .sigclear{display:inline-block; margin-left:6px; padding:1px 7px; border:1px solid var(--line);
@@ -244,7 +259,7 @@ let cfg={
   url: localStorage.getItem("sb_url") || PRESET.url,
   key: localStorage.getItem("sb_key") || (PRESET.key.startsWith("PASTE") ? "" : PRESET.key)
 };
-let state={cat:"", persp:"", offset:0, busy:false, counts:{}, seen:{}};
+let state={cat:"", persp:"", offset:0, busy:false, counts:{}, rows:[]};
 let articleRequest=0, countRequest=0, articleController=null, countController=null;
 let failedAppend=false;
 const getPins=()=>JSON.parse(localStorage.getItem("cat_pins")||"[]").filter(c=>ALL.includes(c));
@@ -479,39 +494,92 @@ async function adminRemove(term,lang){
   if(!res.error) renderWL(res.items||[]);
 }
 
-function render(rows, append){
-  const list=document.getElementById("list"); if(!append){ list.innerHTML=""; state.seen={}; }
-  for(const a of rows){
-    const key=(a.category||"")+"|"+normT(a.title_ko||a.title);
-    const prev=state.seen[key];
-    if(prev && key.length>10){                // 같은 사건 재게시 → 대표 카드에 출처만 추가
-      const also=prev.querySelector(".also");
-      const src=esc(a.source_name||dom(a.url));
-      also.insertAdjacentHTML("beforeend",
-        `${also.children.length?" · ":"같은 소식: "}<a href="${esc(a.url)}" target="_blank" rel="noopener">${src}</a>`);
-      continue;
+// ── 묶음형 목록(3안) ───────────────────────────────────────────────
+// 기사를 회사·사건 단위로 묶고, 같은 소식은 대표 1건으로 접는다.
+// 목록의 단위가 '기사 수'가 아니라 '사건 수'가 되어 반복이 사라진다.
+function sigPill(pt){
+  if(!pt) return "";
+  const cls=pt===LEAD_TAG?"tag lead":(IMM_TAGS.includes(pt)?"tag imm":(pt===POLICY_TAG?"tag pol":"tag"));
+  return `<span class="${cls}">${esc(pt)}</span>`;
+}
+// 묶음 기준: ①워치리스트 회사 ②(회사 없고) 신호 태그 ③나머지는 분류
+function groupOf(a){
+  const mc=a.matched_companies||[];
+  if(mc.length) return {key:"co|"+mc[0], name:mc[0], kind:"co"};
+  const pt=a.perspective_tag||"";
+  if(pt) return {key:"sig|"+pt, kind:"sig",
+                 name:(pt===LEAD_TAG?"신규 발굴":pt)+" · 관심회사 밖"};
+  return {key:"cat|"+(a.category||"미분류"), name:"그 외 · "+(a.category||"미분류"), kind:"cat"};
+}
+function itemHTML(it, showPill){
+  const a=it.a, t=a.title_ko||a.title;
+  const orig=(a.title_ko&&a.lang!=="ko"&&a.title!==a.title_ko)?`<div class="orig">${esc(a.title)}</div>`:"";
+  const L={ko:"한",en:"EN",ja:"日"}[a.lang]||a.lang;
+  const also=it.dupes.length
+    ? `<div class="also">같은 소식 ${it.dupes.length}건 · `
+      + it.dupes.slice(0,5).map(d=>
+          `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.source_name||dom(d.url))}</a>`
+        ).join(" · ") + `</div>`
+    : "";
+  const sum=a.summary_ko?`<div class="sum">${esc(a.summary_ko)}</div>`:"";
+  return `<div class="item"><div class="ititle">
+      <a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(t)}</a>${orig}
+      <div class="imeta"><span class="cat" onclick="pick('${(a.category||'').replace(/'/g,"\\'")}')">${esc(a.category||"미분류")}</span>${showPill?sigPill(a.perspective_tag||""):""}<span class="lang">${L}</span><span>${esc(a.source_name||dom(a.url))}</span></div>
+      ${also}${sum}
+    </div><span class="itime">${fmtT(a.published_at)}</span></div>`;
+}
+// 같은 사건 판정 — 메일 파이프라인(_dedupe_similar)과 같은 기준: 문자 2-gram 자카드 0.6.
+// 완전일치만 보면 매체마다 조사·부제가 달라 대부분 놓친다.
+function bigrams(s){ const b=new Set(); for(let i=0;i<s.length-1;i++) b.add(s.slice(i,i+2)); return b; }
+function jaccard(a,b){ let n=0; for(const x of a) if(b.has(x)) n++; return n/(a.size+b.size-n||1); }
+
+function renderGroups(){
+  const list=document.getElementById("list");
+  // ① 먼저 '사건'으로 묶는다 — 같은 분류 안에서만 비교해 오탐을 줄인다
+  const events=[];
+  for(const a of state.rows){
+    const nk=normT(a.title_ko||a.title), bg=bigrams(nk), cat=a.category||"";
+    let hit=null;
+    if(nk.length>10){
+      for(const e of events){
+        if(e.cat!==cat) continue;
+        if(e.nk===nk || jaccard(e.bg,bg)>=0.6){ hit=e; break; }
+      }
     }
-    const t=a.title_ko||a.title;
-    const orig=(a.title_ko&&a.lang!=="ko"&&a.title!==a.title_ko)?`<div class="orig">${esc(a.title)}</div>`:"";
-    const L={ko:"한",en:"EN",ja:"日"}[a.lang]||a.lang;
-    // 관점 태그 — 영업 신호는 색으로 승격(선행=녹색·임박=빨강), 나머지는 회색
-    const pt=a.perspective_tag||"";
-    const cls=pt===LEAD_TAG?"tag lead":(IMM_TAGS.includes(pt)?"tag imm":(pt===POLICY_TAG?"tag pol":"tag"));
-    const tag=pt?`<span class="${cls}">${esc(pt)}</span>`:"";
-    // 회사칩 — 어느 회사 건인지가 제목만큼 중요. 워치리스트 밖 선행신호는 신규 후보 표시
-    const mc=a.matched_companies||[];
-    const co=mc.length ? `<span class="co">${esc(mc.join(", "))}</span>`
-                       : (pt===LEAD_TAG?`<span class="co new">🆕 신규</span>`:"");
-    const sum=a.summary_ko?`<div class="sum">${esc(a.summary_ko)}</div>`:"";
-    const card=document.createElement("div"); card.className="card";
-    card.innerHTML=`
-      <a class="t" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(t)}</a>${orig}
-      <div class="meta"><span class="cat" onclick="pick('${(a.category||'').replace(/'/g,"\\'")}')">${esc(a.category||"미분류")}</span>${co}${tag}
-        <span class="lang">${L}</span><span>${esc(a.source_name||dom(a.url))}</span><span>${fmtT(a.published_at)}</span></div>
-      <div class="also"></div>${sum}`;
-    list.appendChild(card);
-    state.seen[key]=card;
+    if(hit) hit.dupes.push(a); else events.push({a, nk, bg, cat, dupes:[]});
   }
+  // ② 사건을 회사·신호·분류로 묶는다
+  const groups=new Map();
+  for(const ev of events){
+    const g=groupOf(ev.a);
+    if(!groups.has(g.key)) groups.set(g.key,{...g, items:[]});
+    groups.get(g.key).items.push(ev);
+  }
+  // 신호 있는 회사 묶음 → 회사 묶음 → 신규 발굴 → 그 외, 각 구간은 최신순
+  const rank=g=>g.kind==="co" ? (g.items.some(i=>i.a.perspective_tag)?0:1)
+                              : (g.kind==="sig"?2:3);
+  const latest=g=>g.items.reduce((m,i)=>Math.max(m, Date.parse(i.a.published_at||0)||0), 0);
+  const ordered=[...groups.values()].sort((x,y)=>rank(x)-rank(y)||latest(y)-latest(x));
+
+  const html=ordered.map(g=>{
+    const tags=[...new Set(g.items.map(i=>i.a.perspective_tag).filter(Boolean))];
+    // 묶음 안에서 신호가 하나뿐이면 머리글에만 표시(중복 방지), 여러 개면 항목마다
+    const showPill=tags.length>1;
+    const head=g.kind==="co" ? `<span class="co">${esc(g.name)}</span>`
+                             : `<span class="gname">${esc(g.name)}</span>`;
+    // 신호별 묶음은 이름 자체가 태그라 머리글 알약을 붙이지 않는다(같은 말 두 번 방지)
+    const pills=(showPill||g.kind==="sig")?"":tags.map(sigPill).join("");
+    const dup=g.items.reduce((n,i)=>n+i.dupes.length,0);
+    const cnt=`${g.items.length}건${dup?` (+같은 소식 ${dup})`:""}`;
+    return `<div class="bundle"><div class="ghd">${head}${pills}<span class="gcount">${cnt}</span></div>`
+      + g.items.map(i=>itemHTML(i, showPill)).join("") + `</div>`;
+  }).join("");
+  list.innerHTML=html;
+}
+function render(rows, append){
+  if(!append) state.rows=[];
+  state.rows.push(...rows);
+  renderGroups();
 }
 async function load(append){
   if(append&&state.busy) return;
