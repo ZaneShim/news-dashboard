@@ -460,10 +460,17 @@ let adminPw="";
 function openAdmin(){ document.getElementById("adminModal").classList.add("show"); closeDrawer();
   const saved=sessionStorage.getItem("adminPw"); if(saved){document.getElementById("adminPw").value=saved; adminLoad();} }
 function closeAdmin(){ document.getElementById("adminModal").classList.remove("show"); }
+// 회사명 표기로 언어 판별. 서버 RPC(mig 017)에도 같은 규칙이 있지만 그쪽은 p_lang 이
+// 비었을 때만 돈다 — 여기서 늘 "ko"를 보내고 있어서 일본어 회사도 '한'으로 등록됐다.
+// (2026-08-31 전수조사: 활성 103건 중 11건이 표기와 불일치)
+function wlLang(t){
+  return /[가-힣]/.test(t) ? "ko" : /[ぁ-んァ-ヶー々一-龥]/.test(t) ? "ja" : "en";
+}
 async function adminRPC(action, term, lang){
   const r=await fetch(cfg.url+"/rest/v1/rpc/admin_watchlist",{method:"POST",
     headers:{apikey:cfg.key,Authorization:"Bearer "+cfg.key,"Content-Type":"application/json"},
-    body:JSON.stringify({p_secret:adminPw,p_action:action,p_term:term||null,p_lang:lang||"ko"})});
+    body:JSON.stringify({p_secret:adminPw,p_action:action,p_term:term||null,
+                         p_lang:lang||(term?wlLang(term):null)})});
   return r.json();
 }
 function renderWL(items){
